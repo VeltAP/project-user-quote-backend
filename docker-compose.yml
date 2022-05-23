@@ -1,0 +1,22 @@
+#version: '3.9'
+#services:
+#  backend:
+#    build: .
+#    ports:
+#      - "8000:3000"
+#    volumes:
+#      - .:/app
+#    depends_on:
+#      - db
+#
+#  db:
+#    image: postgres
+#    restart: always
+#    environment:
+#      POSTGRES_DATABASE: backend
+#      POSTGRES_USER: postgres
+#      POSTGRES_PASSWORD: root
+#    volumes:
+#      - .dbdata:/var/lib/postgresql
+#    ports:
+#      - "5432:5432"
