@@ -1,71 +1,63 @@
-import {
-    BadRequestException,
-    Body,
-    Injectable,
-    NotFoundException,
-    Res,
-    UnauthorizedException
-} from '@nestjs/common';
-import {JwtService} from "@nestjs/jwt";
-import {User} from "../user/user.entity";
-import {UserService} from "../user/user.service";
-import {SignUpDto} from "./dto/signup.dto";
-import * as bcrypt from 'bcrypt';
-import {LoginDto} from "./dto/login.dto";
-import { Response } from "express";
-// import {QuoteService} from "../quote/quote.service";
-// import {Quote} from "../quote/quote.entity";
-
+import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { User } from 'src/modules/user/user.entity';
+import { Request, Response } from 'express'
+import { PostgresErrorCode } from 'src/helpers/postgresErrorCode.enum';
+import { CookieType, JwtType, TokenPayload } from 'src/interfaces/auth.interface';
+import { UserData } from 'src/interfaces/user.interface';
+import Logging from 'src/library/Logging';
+import { UsersService } from 'src/modules/user/user.service';
+import { compareHash, hash } from '../utils/bcrypt';
+import { SignUpDto } from './dto/signup.dto';
 
 @Injectable()
 export class AuthService {
 
     constructor(
+        private usersService: UsersService,
         private jwtService: JwtService,
-        // @InjectRepository(User)
-        // private readonly userRepository: Repository<User>,
-        private userService: UserService,
-        // private quoteService: QuoteService,
-    ) {
-    }
+        private configService: ConfigService,
+      ) {}
 
-    async createNewUser(@Body() body: SignUpDto): Promise<User> {
+    // async createNewUser(@Body() body: SignUpDto): Promise<User> {
 
-        if (body.password !== body.password_confirm) {
-            throw new BadRequestException('Password do not match!');
-        }
+    //     if (body.password !== body.password_confirm) {
+    //         throw new BadRequestException('Password do not match!');
+    //     }
 
-        const hashedPassword = await bcrypt.hash(body.password, 12);
+    //     const hashedPassword = await bcrypt.hash(body.password, 12);
 
-        return this.userService.create({
-            first_name: body.first_name,
-            last_name: body.last_name,
-            email: body.email,
-            password: hashedPassword,
-        });
+    //     return this.usersService.create({
+    //         first_name: body.first_name,
+    //         last_name: body.last_name,
+    //         email: body.email,
+    //         password: hashedPassword,
+    //     });
 
-    }
+    // }
 
-    async login(
-        @Body() body: LoginDto,
-        @Res({passthrough: true}) response: Response
-    ) {
-        const user = await this.userService.findOne({email: body.email});
+    // async login(
+    //     @Body() body: LoginDto,
+    //     @Res({passthrough: true}) response: Response
+    // ) {
+    //     console.log(body);
+    //     const user = await this.usersService.findOne({email: body.email});
 
-        if (!user) {
-            throw new NotFoundException('User not found');
-        }
+    //     if (!user) {
+    //         throw new NotFoundException('User not found');
+    //     }
 
-        if (!(await bcrypt.compare(body.password, user.password))) {
-            throw new BadRequestException('Invalid password');
-        }
+    //     if (!(await bcrypt.compare(body.password, user.password))) {
+    //         throw new BadRequestException('Invalid password');
+    //     }
 
-        const jwt = await this.jwtService.signAsync({id: user.id});
+    //     const jwt = await this.jwtService.signAsync({id: user.id});
 
-        response.cookie('jwt', jwt, {httpOnly: true})
+    //     response.cookie('jwt', jwt, {httpOnly: true})
 
-        return user;
-    }
+    //     return user;
+    // }
 
     // async userById(@Req() request: Request) {
     //     try {
@@ -88,8 +80,8 @@ export class AuthService {
     //     }
     // }
 
-    async findUserById(id: number): Promise<User | undefined> {
-        const data = await this.userService.findOne({
+    async findUserById(id: string): Promise<User | undefined> {
+        const data = await this.usersService.findOne({
             id: id,
         });
 
@@ -99,37 +91,160 @@ export class AuthService {
 
         return data;
     }
-
-    // async findUserQuote(id: number): Promise<Quote | undefined> {
-    //
-    //     const data = await this.quoteService.findOne({
-    //         id: id,
-    //     });
-    //
-    //     if (!data) {
-    //         throw new UnauthorizedException('Quote does not exist');
-    //     }
-    //
-    //     return data;
-
-        // const data = await this.quoteService.getQuoteByUser({
-        //     // where: { user: user },
-        //     where: { id: id },
-        //     relations: [
-        //         'user',
-        //         // 'usersUpVoted',
-        //         // 'usersDownVoted'
-        //     ],
-        // });
-        //
-        // return data;
-    // }
-
-    // async userId(request: Request): Promise<number> {
-    //     const cookie = request.cookies['jwt'];
-    //
-    //     const data = await this.jwtService.verifyAsync(cookie);
-    //
-    //     return data['id'];
-    // }
+ 
+    
+    async validateUser(email: string, password: string): Promise<User> {
+        Logging.info('Validating user...')
+        const user = await this.usersService.findBy({ email: email })
+        if (!user) {
+          throw new BadRequestException('Invalid credentials.')
+        }
+        if (!(await compareHash(password, user.password))) {
+          throw new BadRequestException('Invalid credentials.')
+        }
+    
+        Logging.info('User is valid.')
+        return user
+      }
+    
+      async register(signUpDto: SignUpDto): Promise<User> {
+        const hashedPassword: string = await hash(signUpDto.password)
+        const user = await this.usersService.create({
+          ...signUpDto,
+          password: hashedPassword,
+        })
+        return user
+      }
+    
+      async login(userFromRequest: User, res: Response): Promise<void> {
+        const { password, ...user } = await this.usersService.findById(userFromRequest.id)
+        const accessToken = await this.generateToken(user.id, user.email, JwtType.ACCESS_TOKEN)
+        const accessTokenCookie = await this.generateCookie(accessToken, CookieType.ACCESS_TOKEN)
+        const refreshToken = await this.generateToken(user.id, user.email, JwtType.REFRESH_TOKEN)
+        const refreshTokenCookie = await this.generateCookie(refreshToken, CookieType.REFRESH_TOKEN)
+        try {
+          await this.updateRtHash(user.id, refreshToken)
+          res.setHeader('Set-Cookie', [accessTokenCookie, refreshTokenCookie]).json({ ...user })
+        } catch (error) {
+          Logging.error(error)
+          throw new InternalServerErrorException('Something went wrong while setting cookies into response header.')
+        }
+      }
+    
+      async signout(userId: string, res: Response): Promise<void> {
+        const user = await this.usersService.findById(userId)
+        await this.usersService.update(user.id, { refresh_token: null })
+        try {
+          res.setHeader('Set-Cookie', this.getCookiesForSignOut()).sendStatus(200)
+        } catch (error) {
+          Logging.error(error)
+          throw new InternalServerErrorException('Something went wrong while setting cookies into response header.')
+        }
+      }
+    
+      async refreshTokens(req: Request): Promise<User> {
+        const user = await this.usersService.findBy({ refresh_token: req.cookies.refresh_token })
+        if (!user) {
+          throw new ForbiddenException()
+        }
+        try {
+          await this.jwtService.verifyAsync(user.refresh_token, {
+            secret: this.configService.get('JWT_REFRESH_SECRET'),
+          })
+        } catch (error) {
+          Logging.error(error)
+          throw new UnauthorizedException('Something went wrong while refreshing tokens.')
+        }
+    
+        const token = await this.generateToken(user.id, user.email, JwtType.ACCESS_TOKEN)
+        const cookie = await this.generateCookie(token, CookieType.ACCESS_TOKEN)
+    
+        try {
+          req.res.setHeader('Set-Cookie', cookie)
+        } catch (error) {
+          Logging.error(error)
+          throw new InternalServerErrorException('Something went wrong while setting cookies into response header.')
+        }
+        return user
+      }
+    
+      async updateRtHash(userId: string, rt: string): Promise<void> {
+        try {
+          await this.usersService.update(userId, { refresh_token: rt })
+        } catch (error) {
+          Logging.error(error)
+          throw new InternalServerErrorException('Something went wrong while updating user refresh token.')
+        }
+      }
+    
+      async getUserIfRefreshTokenMatches(refreshToken: string, userId: string): Promise<UserData> {
+        const user = await this.usersService.findById(userId)
+        const isRefreshTokenMatching = await compareHash(refreshToken, user.refresh_token)
+        if (isRefreshTokenMatching) {
+          return {
+            id: user.id,
+            email: user.email,
+          }
+        }
+      }
+    
+      async generateToken(userId: string, email: string, type: JwtType): Promise<string> {
+        try {
+          const payload: TokenPayload = { sub: userId, name: email, type }
+          let token: string
+          switch (type) {
+            case JwtType.ACCESS_TOKEN:
+              token = await this.jwtService.signAsync(payload)
+              break
+            case JwtType.REFRESH_TOKEN:
+              token = await this.jwtService.signAsync(payload, {
+                secret: this.configService.get('JWT_REFRESH_SECRET'),
+                expiresIn: `${this.configService.get('JWT_REFRESH_SECRET_EXPIRES')}s`,
+              })
+              break
+            default:
+              throw new BadRequestException('Access denied.')
+          }
+          return token
+        } catch (error) {
+          Logging.error(error)
+          if (error?.code === PostgresErrorCode.UniqueViolation) {
+            throw new BadRequestException('User with that email already exists.')
+          }
+          throw new InternalServerErrorException('Something went wrong while generating a new token.')
+        }
+      }
+    
+      async generateCookie(token: string, type: CookieType): Promise<string> {
+        try {
+          let cookie: string
+          switch (type) {
+            case CookieType.ACCESS_TOKEN:
+              cookie = `access_token=${token}; HttpOnly; Path=/; Max-Age=${this.configService.get(
+                'JWT_SECRET_EXPIRES',
+              )}; SameSite=strict`
+              break
+            case CookieType.REFRESH_TOKEN:
+              cookie = `refresh_token=${token}; HttpOnly; Path=/; Max-Age=${this.configService.get(
+                'JWT_REFRESH_SECRET_EXPIRES',
+              )}; SameSite=strict`
+              break
+            default:
+              throw new BadRequestException('Access denied.')
+          }
+          return cookie
+        } catch (error) {
+          Logging.error(error)
+          throw new InternalServerErrorException('Something went wrong while generating a new cookie.')
+        }
+      }
+    
+      getCookiesForSignOut(): string[] {
+        return ['access_token=; HttpOnly; Path=/; Max-Age=0', 'refresh_token=; HttpOnly; Path=/; Max-Age=0']
+      }
+    
+      async getUserId(request: Request): Promise<string> {
+        const user = request.user as User
+        return user.id
+      }
 }
